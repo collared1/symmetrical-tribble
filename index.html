@@ -1,1 +1,485 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Symmetrical Tribble — Dougdoug Chaos Runner</title>
+  <style>
+    :root{
+      --bg:#0e0f13;
+      --panel:#111318;
+      --accent:#7ee787;
+      --muted:#a8b0b8;
+      --danger:#ff6b6b;
+    }
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;color:var(--muted);background:
+      radial-gradient(ellipse at 10% 10%, rgba(126,231,135,0.06), transparent 8%),
+      radial-gradient(ellipse at 90% 90%, rgba(126,231,135,0.03), transparent 10%),
+      var(--bg);
+    }
+    .wrap{max-width:980px;margin:24px auto;padding:18px;display:grid;grid-template-columns:1fr 300px;gap:18px;}
+    header{grid-column:1/-1;display:flex;align-items:center;gap:12px}
+    h1{margin:0;font-size:1.25rem;color:var(--accent)}
+    p.lead{margin:0;color:var(--muted);font-size:0.95rem}
+    .game{
+      background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+      border:1px solid rgba(255,255,255,0.03);
+      border-radius:10px;
+      padding:12px;
+      display:flex;flex-direction:column;align-items:center;
+    }
+    canvas{background:linear-gradient(180deg,#061217 0%, #061922 100%);border-radius:8px;display:block}
+    .hud{display:flex;gap:12px;margin-top:8px;align-items:center;width:100%;justify-content:space-between}
+    .stats{display:flex;gap:8px;align-items:center}
+    .btn{
+      background:var(--panel);border:1px solid rgba(255,255,255,0.03);color:var(--muted);
+      padding:8px 12px;border-radius:8px;cursor:pointer;font-weight:600;
+    }
+    .btn.accent{background:linear-gradient(90deg,#0f2 10%, #07a36a 100%);color:#03110a;border:0}
+    .sidebar{background:var(--panel);border-radius:10px;padding:12px;height:100%;}
+    .mod-list{display:flex;flex-direction:column;gap:8px;margin-top:8px;max-height:460px;overflow:auto}
+    .mod{padding:8px;border-radius:8px;background:linear-gradient(180deg,rgba(255,255,255,0.01),transparent);font-size:0.9rem}
+    .banner{position:absolute;left:50%;transform:translateX(-50%);top:28px;background:rgba(0,0,0,0.6);padding:8px 12px;border-radius:999px;color:#fff;font-weight:700;border:1px solid rgba(255,255,255,0.06)}
+    footer{grid-column:1/-1;text-align:center;color:#6d7480;font-size:0.9rem;margin-top:12px}
+    @media (max-width:900px){
+      .wrap{grid-template-columns:1fr; padding:12px}
+      .sidebar{order:2}
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Symmetrical Tribble</h1>
+      <p class="lead">A small chaotic runner inspired by dougdoug streams — modifiers change the rules mid-run. Space or tap to jump. Click "Spin the Wheel" for chaos.</p>
+    </header>
 
+    <div class="game" id="gamePanel">
+      <div style="position:relative;width:100%;max-width:640px;">
+        <canvas id="c" width="800" height="240"></canvas>
+        <div class="banner" id="modBanner" style="display:none"></div>
+      </div>
+
+      <div class="hud" style="max-width:640px;">
+        <div class="stats">
+          <div style="font-weight:700;color:var(--accent)">Score: <span id="score">0</span></div>
+          <div style="font-weight:700;color:var(--muted)">Best: <span id="best">0</span></div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn" id="restartBtn">Restart</button>
+          <button class="btn accent" id="spinBtn">Spin the Wheel</button>
+        </div>
+      </div>
+    </div>
+
+    <aside class="sidebar">
+      <h3 style="margin:0;color:var(--accent)">Modifiers (dougdoug vibes)</h3>
+      <div style="font-size:0.9rem;color:var(--muted);margin-top:6px">
+        Every 12s a random modifier will apply for a short time. Spin to immediately pick one.
+      </div>
+
+      <div class="mod-list" id="modList"></div>
+
+      <div style="margin-top:12px;display:flex;gap:8px">
+        <button class="btn" id="muteBtn">Mute</button>
+        <button class="btn" id="helpBtn">How to Play</button>
+      </div>
+    </aside>
+
+    <footer>Made for fun — inspired by dougdoug's chaotic modifiers. Controls: Space / Click / Tap to jump. Have fun!</footer>
+  </div>
+
+  <script>
+    // Simple endless runner with modifiers inspired by dougdoug.
+    (function(){
+      const canvas = document.getElementById('c');
+      const ctx = canvas.getContext('2d');
+      let W = canvas.width, H = canvas.height;
+      const scoreEl = document.getElementById('score');
+      const bestEl = document.getElementById('best');
+      const modBanner = document.getElementById('modBanner');
+      const modListEl = document.getElementById('modList');
+      const spinBtn = document.getElementById('spinBtn');
+      const restartBtn = document.getElementById('restartBtn');
+      const muteBtn = document.getElementById('muteBtn');
+      const helpBtn = document.getElementById('helpBtn');
+
+      // Game state
+      let running = false;
+      let paused = false;
+      let score = 0;
+      let best = parseInt(localStorage.getItem('tribble_best')||'0',10);
+      bestEl.textContent = best;
+      let lastTime = 0;
+      let speed = 180; // base speed px/sec
+      let obstacles = [];
+      let spawnTimer = 0;
+      let modifierTimer = 0;
+      let activeModifier = null;
+      let audioOn = true;
+
+      // Player
+      const player = {
+        x: 80,
+        y: H - 36 - 16, // ground-based
+        w: 28,
+        h: 28,
+        vy: 0,
+        grounded: false,
+        color: '#7ee787',
+        jumpPower: -360,
+        gravity: 1000,
+        scale: 1,
+        invertedControls: false
+      };
+
+      // Modifiers
+      const modifiers = [
+        { id:'low_grav', name:'Low Gravity', desc:'Floaty jumps', duration:8000, apply(g){ g.player.gravity *= 0.45; }, remove(g){ g.player.gravity /= 0.45; }, icon:'🪂' },
+        { id:'turbo', name:'Turbo', desc:'Faster world', duration:7000, apply(g){ g.speedMultiplier *= 1.6; }, remove(g){ g.speedMultiplier /= 1.6; }, icon:'⚡' },
+        { id:'tiny', name:'Tiny Player', desc:'Player shrinks', duration:7000, apply(g){ g.player.scale *= 0.5; g.player.w *= 0.5; g.player.h *= 0.5; }, remove(g){ g.player.scale *= 2; g.player.w *= 2; g.player.h *= 2; }, icon:'🐜' },
+        { id:'giant_obs', name:'Giant Obstacles', desc:'Obstacles get huge', duration:7000, apply(g){ g.obstacleScale *= 1.8; }, remove(g){ g.obstacleScale /= 1.8; }, icon:'🏔️' },
+        { id:'invert', name:'Inverted Controls', desc:'Left is right...', duration:6000, apply(g){ g.player.invertedControls = true; }, remove(g){ g.player.invertedControls = false; }, icon:'🔁' },
+        { id:'slowmo', name:'Slow Motion', desc:'Everything slows down', duration:6000, apply(g){ g.timeScale *= 0.55; }, remove(g){ g.timeScale /= 0.55; }, icon:'🐢' },
+        { id:'blackout', name:'Blackout', desc:'Dark screen!', duration:5000, apply(g){ g.blackout = true; }, remove(g){ g.blackout = false; }, icon:'🌑' },
+        { id:'mirror', name:'Mirror Mode', desc:'World flips horizontally', duration:7000, apply(g){ g.mirror = true; }, remove(g){ g.mirror = false; }, icon:'🪞' }
+      ];
+
+      // Game context for modifiers
+      const game = {
+        player,
+        speedMultiplier: 1,
+        obstacleScale: 1,
+        timeScale: 1,
+        blackout: false,
+        mirror: false
+      };
+
+      // Audio (beep)
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      const audioCtx = AudioCtx ? new AudioCtx() : null;
+      function beep(freq=440, time=0.08, vol=0.08){
+        if(!audioOn || !audioCtx) return;
+        const o = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        o.type='sine'; o.frequency.value = freq;
+        g.gain.value = vol;
+        o.connect(g); g.connect(audioCtx.destination);
+        o.start();
+        o.stop(audioCtx.currentTime + time);
+      }
+
+      // Draw helpers
+      function roundRect(ctx,x,y,w,h,r){
+        ctx.beginPath();
+        ctx.moveTo(x+r,y);
+        ctx.arcTo(x+w,y,x+w,y+h,r);
+        ctx.arcTo(x+w,y+h,x,y+h,r);
+        ctx.arcTo(x,y+h,x,y,r);
+        ctx.arcTo(x,y,x+w,y,r);
+        ctx.closePath();
+      }
+
+      // Input
+      let wantJump = false;
+      window.addEventListener('keydown', e=>{
+        if(e.code === 'Space') { e.preventDefault(); wantJump = true; if(!running){ start(); } }
+        if(e.code === 'KeyM'){ toggleMute(); }
+      });
+      window.addEventListener('keyup', e=>{
+        if(e.code === 'Space'){ wantJump = false; }
+      });
+      canvas.addEventListener('pointerdown', e=>{
+        wantJump = true;
+        if(!running) start();
+        // release on pointerup to avoid holding forever
+      });
+      window.addEventListener('pointerup', e=>{ wantJump = false; });
+
+      // Resize handling
+      function fitCanvas(){
+        const maxW = Math.min(window.innerWidth-80, 800);
+        canvas.style.width = '100%';
+        // keep logical size constant to simplify physics
+      }
+      window.addEventListener('resize', fitCanvas);
+      fitCanvas();
+
+      // Obstacle factory
+      function spawnObstacle(){
+        const h = 16 + Math.random()*44;
+        const gap = 0; // simple ground obstacles
+        const w = 14 + Math.random()*34;
+        obstacles.push({
+          x: W + 20,
+          w: w,
+          h: h,
+          y: H - 36 - h,
+        });
+      }
+
+      // Collision
+      function collided(a,b){
+        return !(a.x + a.w < b.x || a.x > b.x + b.w || a.y + a.h < b.y || a.y > b.y + b.h);
+      }
+
+      // Modifier management
+      function applyModifier(mod){
+        if(activeModifier) removeActiveModifier();
+        activeModifier = mod;
+        if(mod.apply) mod.apply(game);
+        modBanner.textContent = (mod.icon ? mod.icon + ' ' : '') + mod.name;
+        modBanner.style.display = 'block';
+        beep(800,0.06,0.06);
+        modifierTimer = mod.duration;
+        updateModList();
+      }
+      function removeActiveModifier(){
+        if(!activeModifier) return;
+        if(activeModifier.remove) activeModifier.remove(game);
+        activeModifier = null;
+        modBanner.style.display = 'none';
+        updateModList();
+      }
+      function pickRandomModifier(){
+        const m = modifiers[Math.floor(Math.random()*modifiers.length)];
+        applyModifier(m);
+      }
+
+      // UI list
+      function updateModList(){
+        modListEl.innerHTML = '';
+        modifiers.forEach(m=>{
+          const el = document.createElement('div');
+          el.className = 'mod';
+          let activeMark = activeModifier && activeModifier.id===m.id ? ' — ACTIVE' : '';
+          el.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center">
+            <div><strong>${m.icon||''} ${m.name}</strong><div style="font-size:0.85rem;color:var(--muted)">${m.desc}</div></div>
+            <div style="text-align:right">
+              <button class="btn" data-mod="${m.id}" style="font-size:0.8rem">Apply</button>
+            </div>
+          </div>`;
+          modListEl.appendChild(el);
+
+          const btn = el.querySelector('button');
+          btn.addEventListener('click', ()=> applyModifier(m));
+          if(activeModifier && activeModifier.id===m.id) btn.disabled=true;
+        });
+      }
+      updateModList();
+
+      // Spin the wheel
+      spinBtn.addEventListener('click', ()=> {
+        pickRandomModifier();
+      });
+
+      restartBtn.addEventListener('click', ()=> {
+        reset();
+        start();
+      });
+
+      muteBtn.addEventListener('click', ()=> toggleMute());
+      helpBtn.addEventListener('click', ()=> alert('Controls:\n- Space / Click / Tap: Jump\n- M: toggle mute\nTip: Spin the Wheel for random chaos!'));
+
+      function toggleMute(){
+        audioOn = !audioOn;
+        muteBtn.textContent = audioOn ? 'Mute' : 'Unmute';
+        if(audioOn && audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+      }
+
+      // Game loop
+      function start(){
+        running = true;
+        score = 0;
+        lastTime = performance.now();
+        obstacles = [];
+        spawnTimer = 0;
+        modifierTimer = 12000; // first modifier after a bit
+        speed = 180;
+        game.speedMultiplier = 1;
+        game.obstacleScale = 1;
+        game.timeScale = 1;
+        game.blackout = false;
+        game.mirror = false;
+        player.y = H - 36 - player.h;
+        player.vy = 0;
+        player.scale = 1;
+        player.invertedControls = false;
+        activeModifier = null;
+        modBanner.style.display='none';
+        beep(660,0.08,0.06);
+        requestAnimationFrame(loop);
+      }
+      function reset(){
+        running=false;
+        removeActiveModifier();
+        if(score>best){ best = Math.floor(score); localStorage.setItem('tribble_best',best); bestEl.textContent = best; }
+      }
+
+      function gameOver(){
+        beep(220,0.4,0.12);
+        running = false;
+        if(score>best){ best = Math.floor(score); localStorage.setItem('tribble_best',best); bestEl.textContent = best; }
+        setTimeout(()=> {
+          if(confirm('You died! Restart?')) { reset(); start(); }
+        }, 80);
+      }
+
+      function loop(ts){
+        if(!running) return;
+        const dtRaw = Math.min(40, ts - lastTime);
+        lastTime = ts;
+        const dt = dtRaw/1000 * game.timeScale;
+        // physics and spawn
+        const spd = speed * game.speedMultiplier * dt;
+
+        // spawn obstacles every 1.0-1.8s scaled by speed
+        spawnTimer -= dt*1000;
+        if(spawnTimer <= 0){
+          spawnTimer = 700 + Math.random()*900;
+          spawnObstacle();
+        }
+        // move obstacles
+        for(let i=obstacles.length-1;i>=0;i--){
+          obstacles[i].x -= spd * (1 + Math.random()*0.03) * game.obstacleScale;
+          if(obstacles[i].x + obstacles[i].w < -40) obstacles.splice(i,1);
+        }
+
+        // gravity & jump
+        player.vy += player.gravity * dt;
+        // jumping
+        if(wantJump && player.grounded){
+          const effectiveJump = player.jumpPower * (player.invertedControls ? -1 : 1);
+          // if invertedControls, we flip jump direction? Instead we'll invert horizontal inputs (not implemented) — emulate by smaller jump instead
+          player.vy = effectiveJump * (player.invertedControls ? 0.6 : 1);
+          player.grounded = false;
+          beep(880,0.04,0.06);
+        }
+
+        player.y += player.vy * dt;
+        const groundY = H - 36 - player.h;
+        if(player.y >= groundY){
+          player.y = groundY;
+          player.vy = 0;
+          player.grounded = true;
+        }
+
+        // collisions
+        const pBox = {x:player.x, y:player.y, w:player.w, h:player.h};
+        for(const ob of obstacles){
+          const bBox = {x:ob.x, y:ob.y, w:ob.w, h:ob.h};
+          if(collided(pBox,bBox)){
+            gameOver();
+            return;
+          }
+        }
+
+        // scoring
+        score += spd * 0.02;
+        scoreEl.textContent = Math.floor(score);
+
+        // modifier timer
+        modifierTimer -= dtRaw;
+        if(modifierTimer <= 0){
+          modifierTimer = 12000 + Math.random()*8000;
+          pickRandomModifier();
+        }
+        if(activeModifier){
+          modifierTimer -= 0; // local timer stored separately
+          // we reduced modifierTimer when applying; here decrement
+          modifierTimer -= dtRaw; // use same variable for active remaining when activeModifier exists
+          if(modifierTimer <= 0){
+            removeActiveModifier();
+            modifierTimer = 12000 + Math.random()*8000;
+          } else {
+            // show remaining formatted on banner
+            modBanner.textContent = (activeModifier.icon ? activeModifier.icon + ' ' : '') + activeModifier.name + ' • ' + Math.ceil(modifierTimer/1000) + 's';
+          }
+        }
+
+        // draw
+        draw();
+
+        requestAnimationFrame(loop);
+      }
+
+      function draw(){
+        ctx.save();
+        ctx.clearRect(0,0,W,H);
+
+        // optionally mirror
+        if(game.mirror){
+          ctx.translate(W,0);
+          ctx.scale(-1,1);
+        }
+
+        // background grid
+        ctx.fillStyle = '#07121a';
+        ctx.fillRect(0,0,W,H);
+
+        // ground
+        const groundH = 36;
+        ctx.fillStyle = '#0c1b20';
+        ctx.fillRect(0,H-groundH,W,groundH);
+        // ground pattern
+        ctx.strokeStyle = '#0f2a2e';
+        ctx.globalAlpha = 0.3;
+        for(let x=0;x<W;x+=24){
+          ctx.beginPath(); ctx.moveTo(x,H-groundH); ctx.lineTo(x+12,H-groundH-6); ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+
+        // obstacles
+        for(const ob of obstacles){
+          ctx.fillStyle = '#d87b6b';
+          roundRect(ctx, ob.x, ob.y, ob.w*game.obstacleScale, ob.h*game.obstacleScale, 4);
+          ctx.fill();
+        }
+
+        // player (tribble)
+        const px = player.x;
+        const py = player.y;
+        ctx.save();
+        ctx.translate(px + player.w/2, py + player.h/2);
+        ctx.scale(player.scale, player.scale);
+        // body
+        ctx.fillStyle = player.color;
+        ctx.beginPath();
+        ctx.ellipse(0,0, player.w/2, player.h/2, 0, 0, Math.PI*2);
+        ctx.fill();
+        // eyes
+        ctx.fillStyle = '#05230f';
+        ctx.beginPath(); ctx.ellipse(-6, -4, 4, 4, 0, 0, Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(6, -4, 4, 4, 0, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.beginPath(); ctx.ellipse(-5.5, -4.5, 1.5, 1.5, 0, 0, Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(6.5, -4.5, 1.5, 1.5, 0, 0, Math.PI*2); ctx.fill();
+        ctx.restore();
+
+        // overlay blackout
+        if(game.blackout){
+          ctx.fillStyle = 'rgba(0,0,0,0.86)';
+          ctx.fillRect(0,0,W,H);
+        }
+
+        ctx.restore();
+      }
+
+      // Initial draw
+      draw();
+
+      // start automatically on first click or space if desired
+      // but provide initial text banner
+      modBanner.textContent = 'Press Space or Tap to start';
+      modBanner.style.display = 'block';
+
+      // ensure modifiers list shows correctly
+      updateModList();
+
+      // expose for debug
+      window._tribble = { start, reset, pickRandomModifier, modifiers };
+
+    })();
+  </script>
+</body>
+</html>
